@@ -1,61 +1,47 @@
-import socket
-import threading
-from crypto_utils import encrypt, decrypt
+from flask import Flask, request, send_file
+import os
+from crypto_utils import verify_hmac
 
-HOST = '0.0.0.0'
-PORT = 5000
+app = Flask(__name__)
+UPLOAD_FOLDER = "storage"
 
-clients = []
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
-def broadcast(message, sender):
-    for client in clients:
-        if client != sender:
-            try:
-                client.send(message)
-            except:
-                clients.remove(client)
+SECRET_KEY = b"supersecretkey123"
 
-def handle_client(client_socket, addr):
-    print(f"[CONNECTED] {addr}")
+@app.route("/upload", methods=["POST"])
+def upload():
+    file_id = request.form["file_id"]
+    chunk_index = request.form["chunk_index"]
+    hmac_tag = bytes.fromhex(request.form["hmac"])
 
-    while True:
-        try:
-            data = client_socket.recv(1024)
+    chunk = request.files["file"].read()
 
-            if not data:
-                break
+    try:
+        verify_hmac(chunk, SECRET_KEY, hmac_tag)
+    except:
+        return "Integrity check failed", 400
 
-            message = decrypt(data)
-            print(f"[{addr}] {message}")
+    filename = f"{UPLOAD_FOLDER}/{file_id}_{chunk_index}"
+    with open(filename, "wb") as f:
+        f.write(chunk)
 
-            encrypted_msg = encrypt(message)
-            broadcast(encrypted_msg, client_socket)
-
-        except:
-            break
-
-    print(f"[DISCONNECTED] {addr}")
-    clients.remove(client_socket)
-    client_socket.close()
+    return "Chunk uploaded"
 
 
-def start_server():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((HOST, PORT))
-    server.listen(5)
+@app.route("/download/<file_id>", methods=["GET"])
+def download(file_id):
+    chunks = sorted([f for f in os.listdir(UPLOAD_FOLDER) if f.startswith(file_id)])
 
-    print(f"[SERVER STARTED] {HOST}:{PORT}")
+    filepath = f"{UPLOAD_FOLDER}/{file_id}_complete"
+    with open(filepath, "wb") as outfile:
+        for chunk_file in chunks:
+            with open(f"{UPLOAD_FOLDER}/{chunk_file}", "rb") as infile:
+                outfile.write(infile.read())
 
-    while True:
-        client_socket, addr = server.accept()
-        clients.append(client_socket)
-
-        thread = threading.Thread(
-            target=handle_client,
-            args=(client_socket, addr)
-        )
-        thread.start()
+    return send_file(filepath, as_attachment=True)
 
 
 if __name__ == "__main__":
-    start_server()
+    app.run(ssl_context="adhoc")  # HTTPS enabled

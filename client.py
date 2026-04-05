@@ -1,43 +1,57 @@
-import socket
-import threading
-from crypto_utils import encrypt, decrypt
+import requests
+import os
+from crypto_utils import encrypt, generate_hmac, derive_key
 
-HOST = '127.0.0.1'
-PORT = 5000
+SERVER_URL = "https://127.0.0.1:5000"
+CHUNK_SIZE = 1024 * 1024  # 1MB
 
-def receive_messages(sock):
-    while True:
-        try:
-            data = sock.recv(1024)
-            if not data:
-                break
+password = b"mypassword"
+salt = b"salt123"
+key = derive_key(password, salt)
 
-            message = decrypt(data)
-            print(f"\n[RECEIVED]: {message}")
+def upload_file(filepath):
+    file_id = os.path.basename(filepath)
 
-        except:
-            break
+    with open(filepath, "rb") as f:
+        data = f.read()
+
+    encrypted = encrypt(data, key)
+
+    for i in range(0, len(encrypted), CHUNK_SIZE):
+        chunk = encrypted[i:i+CHUNK_SIZE]
+        tag = generate_hmac(chunk, key)
+
+        files = {"file": chunk}
+        data_form = {
+            "file_id": file_id,
+            "chunk_index": i // CHUNK_SIZE,
+            "hmac": tag.hex()
+        }
+
+        r = requests.post(
+            SERVER_URL + "/upload",
+            files=files,
+            data=data_form,
+            verify=False
+        )
+
+        print(f"Uploaded chunk {i // CHUNK_SIZE}")
 
 
-def send_messages(sock):
-    while True:
-        message = input()
-        encrypted_msg = encrypt(message)
-        sock.send(encrypted_msg)
+def download_file(file_id):
+    r = requests.get(SERVER_URL + f"/download/{file_id}", verify=False)
 
+    encrypted_data = r.content
 
-def start_client():
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client.connect((HOST, PORT))
+    from crypto_utils import decrypt
+    decrypted = decrypt(encrypted_data, key)
 
-    threading.Thread(
-        target=receive_messages,
-        args=(client,),
-        daemon=True
-    ).start()
+    with open("downloaded_" + file_id, "wb") as f:
+        f.write(decrypted)
 
-    send_messages(client)
+    print("Downloaded and decrypted file")
 
 
 if __name__ == "__main__":
-    start_client()
+    upload_file("test.txt")
+    download_file("test.txt")
